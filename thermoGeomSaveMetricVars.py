@@ -1,5 +1,6 @@
 from savemetricvars import save_metric_and_christoffel
 import numpy as np
+from scipy.special import xlogy
 from tqdm import tqdm
 
 
@@ -16,12 +17,11 @@ def metric_from_free_entropy(φ, β, α, δ=1e-5):
 
 def finite_antiferro_mean_field_metric(N, δ=1e-5):
     """"""
-    τ = lambda x: ((1+x)*np.log(1+x) + (1-x) * np.log(1-x))/2
+    τ = lambda x: (xlogy(1+x, 1+x) + xlogy(1-x,1-x))/2
 
     def phi(β, α):
-        return np.log(np.sum([[np.exp((β * x * y + α * (x+y) - τ(x) - τ(y))/2) 
-                               for x in np.linspace(-0.999,0.999, N)]
-                              for y in np.linspace(-0.999,0.999, N)]))
+        return np.log(np.sum([[np.exp((β * x * y / N + α * (x+y) - τ(x) - τ(y))/2) 
+                               for x in np.linspace(-1,1, N)] for y in np.linspace(-1,1, N)]))
 
     return lambda β, α: metric_from_free_entropy(phi, β, α, δ=δ)
 

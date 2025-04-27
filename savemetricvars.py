@@ -52,7 +52,7 @@ def save_metric_and_christoffel(metric_func, grid, filename):
                     )
     
     # Save to .npz file
-    np.savez(filename, metric=metric_grid, christoffel=christoffel_grid, dimensions=n, grid=grid)
+    np.savez(filename, metric=metric_grid, christoffel=christoffel_grid, dimensions=n, **{f"x{i}": x for (x,i) in enumerate(grid)})
 
 
 

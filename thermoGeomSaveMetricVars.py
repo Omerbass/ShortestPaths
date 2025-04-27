@@ -27,11 +27,11 @@ def finite_antiferro_mean_field_metric(N, δ=1e-5):
 
 if __name__ == "__main__":
     # Define the grid for β and α
-    β_grid = np.linspace(1e-3, 3, 100)
-    α_grid = np.linspace(-3, 3, 101)
+    β_grid = np.linspace(1e-3, 3, 10)
+    α_grid = np.linspace(-3, 3, 11)
 
     # Save the metric and Christoffel symbols to a file
-    for N in tqdm(np.logspace(1, 4, 5, dtype=int)):
+    for N in tqdm(np.logspace(1, 3, 5, dtype=int)):
         save_metric_and_christoffel(finite_antiferro_mean_field_metric(N),
                                     [β_grid, α_grid],
                                     f"metrics/mean_field_antiferro_finite_lattice_N={N}.npz")

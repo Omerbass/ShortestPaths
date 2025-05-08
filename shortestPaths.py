@@ -24,6 +24,16 @@ class GeoFinder:
 
     def apply_limits(self, y):
         return y
+    
+    def path(self, x0, alpha, dist, tol=1e-2, v0 = 1):
+        """Find the geodesic path from x0 to x1"""
+        stopevent = lambda t, y, *args: dist - y[-1] + 1e-5
+        stopevent.terminal = True
+        dim = len(x0)
+        y0 = np.concatenate([x0, [v0*np.cos(alpha), v0*np.sin(alpha)], [0]])
+        sol = solve_ivp(self.geodesic_equation, (0, dist*20), y0, max_step=tol*0.5, events=(stopevent, ))
+        path = self.apply_limits(sol.y[:dim,:])
+        return path
 
     # shooting + compartmentalizing
     def shooting_and_comp(self, x0, x1, tol=1e-2):
@@ -39,40 +49,44 @@ class GeoFinder:
             y0 = np.concatenate([x0, [np.cos(alpha), np.sin(alpha)], [0]])
             sol = solve_ivp(self.geodesic_equation, (0, straight_dist*20), y0, 
                             max_step=tol*0.5, events=(stopevent, ))
-            xs = sol.y[:dim, :]
+            xs = self.apply_limits(sol.y[:dim, :])
             # print(np.linalg.norm(xs.T - x1, axis=1))
             
             # Return the error (distance to target)
-            return np.min(np.linalg.norm(self.apply_limits((xs.T - x1).T).T, axis=1))
+            return np.min(np.linalg.norm((xs.T - x1).T.T, axis=1))
 
         def shots(objective, alphas):
-            mindist = p_map(objective, alphas) #, tqdm=tqdm
+            mindist = list(p_map(objective, alphas)) #, tqdm=tqdm
             return np.argmin(mindist), min(mindist)
 
         alpharange = (0, 2*np.pi)
-        mindist=tol+1
-        N = 30
-        for _ in trange(100):
-            alphas = np.linspace(alpharange[0], alpharange[1], N+1)[:-1]
+        # mindist=tol+1
+        N = 40
+        for _ in range(100):
+            alphas = np.linspace(alpharange[0], alpharange[1], N+1)
             dalpha = (alpharange[1] - alpharange[0])/N
+            print("alpharange:", np.rad2deg(alpharange))
             ix, mindist = shots(objective, alphas)
             alphamin = alphas[ix]
             alpharange = (alphamin-dalpha, alphamin+dalpha)
             # print(mindist, ":", np.rad2deg(alpharange), np.rad2deg(alphamin))
             if mindist<tol:
                 break
-        
-        return alphamin, mindist
+    
+        y0 = np.concatenate([x0, [np.cos(alphamin), np.sin(alphamin)], [0]])
+        sol = solve_ivp(self.geodesic_equation, (0, straight_dist*20), y0, 
+                        max_step=tol*0.5, events=(stopevent, ))
+
+        ixf = np.argmin(np.linalg.norm(sol.y[:self.dim,:].T-x1, axis=1))
+        geodesic_dist = sol.y[-1, ixf]
+        return alphamin, geodesic_dist,{"mindist": mindist, "alpharange": alpharange, "ixf": ixf, "sol": sol}
     
     def __call__(self, x0, x1, tol=1e-2):
         """Find the geodesic path from x0 to x1"""
-        alpha, mindist = self.shooting_and_comp(x0, x1, tol)
-        v0 = [np.cos(alpha), np.sin(alpha)]
-        y0 = np.concatenate([x0, v0, [0]])
-        stopevent = lambda t, y, *args: mindist*1.02 - y[-1]
-        stopevent.terminal = True
-        sol = solve_ivp(self.geodesic_equation, [0, 10], y0, max_step=5e-3, events=(stopevent, ))
-        return {"path": sol.y[:len(x0), :], "α0": alpha, "dist": mindist}
+        alpha, geodesic_dist, meta = self.shooting_and_comp(x0, x1, tol)
+        path = meta["sol"].y[:self.dim, :meta["ixf"]+1]
+
+        return {"path": path, "α0": alpha, "dist": geodesic_dist, "meta": meta}
 
 class InformationGeoFinder(GeoFinder):
     def __init__(self, freeEnergy, dx = 1e-4, dim=None):
@@ -146,26 +160,33 @@ class SphereGeoFinder(GeoFinder):
 
 # Example usage
 if __name__ == "__main__":
-    # geo = InformationGeoFinder(lambda β, α: β + 
-    #     np.log(np.cosh(α) + np.sqrt(np.exp(-4*α) + np.sinh(α)**2)), dx=1e-4, dim=2)
+    geo = InformationGeoFinder(lambda β, α: β + 
+        np.log(np.cosh(α) + np.sqrt(np.exp(-4*α) + np.sinh(α)**2)), dx=1e-4, dim=2)
 
-    geo = SphereGeoFinder()
+    # geo = SphereGeoFinder()
 
     # Start and end points
-    x0 = np.array([np.pi/3, 0])
-    x1 = np.array([np.pi/3, 1.5*np.pi/2])
+    # x0 = np.array([np.pi/2 - 0.1, 0])
+    # x1 = np.array([np.pi/2 - 0.1, 1.8*np.pi/2])
     
-    res = geo(x0, x1, tol=1e-2)
-    path = res["path"]
-    alpha = res["α0"]
-    mindist = res["dist"]
-    print('Initial "angle:"', np.rad2deg(alpha))
-    print('minimal distance =', mindist)
+    x0 = np.array([1,1])
+    x1 = np.array([2,1])
+    
+    path = geo.path(x0, np.deg2rad(-135.51805), 5000, v0 = 1000)
+#                                  -135.518 - up-left
+#                                  -135.5181 - down-right
+
+    # res = geo(x0, x1, tol=1e-2)
+    # path = res["path"]
+    # alpha = res["α0"]
+    # mindist = res["dist"]
+    # print('Initial "angle:"', np.rad2deg(alpha))
+    # print('minimal distance =', mindist)
 
     plt.figure(figsize=(8, 6))
-    plt.plot(path[0], path[1], label="Geodesic")
-    plt.scatter(x0[0], x0[1], c='r', label='Start', s=100)
-    plt.scatter(x1[0], x1[1], c='g', label='End', s=100)
+    plt.plot(path[1], path[0], label="Geodesic")
+    plt.scatter(x0[1], x0[0], c='r', label='Start', s=100)
+    plt.scatter(x1[1], x1[0], c='g', label='End', s=100)
     plt.xlabel("β")
     plt.ylabel("α")
     plt.show()

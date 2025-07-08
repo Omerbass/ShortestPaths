@@ -8,6 +8,36 @@ from scipy.spatial.distance import euclidean
 from tqdm.notebook import tqdm, trange
 from p_tqdm import p_map
 from inspect import signature
+from typing import Callable, Iterable, Union
+import warnings
+
+def fixed_point(func:Callable, start:float, args=(), xtol:float=1e-9, maxiter:int=5000, method="iteration"):
+    """
+    Find the fixed point of a function using iteration.
+
+    Parameters:
+    func (callable): The function for which to find the fixed point.
+    start (float): The initial guess for the fixed point.
+    args (iterable): arguments to be passed to function.
+    xtol (float, optional): The tolerance for convergence. Default is 1e-9.
+    max_iter (int, optional): The maximum number of iterations. Default is 5000.
+
+    Returns:
+    float: The fixed point of the function.
+    """
+    if method != "iteration":
+        raise NotImplementedError
+    x0 = start
+    for itr in range(maxiter):
+        x1 = func(x0, *args)
+        if np.max(abs(x1 - x0)) < xtol:
+            break
+        if np.any(np.isnan(x1)):
+            raise Exception(f"got NaN in fixed point. last value was {x0}")
+        x0 = x1
+    if itr == maxiter - 1:
+        warnings.warn(f"Tolerance not reached\nachieved tolerance = {np.max(abs(func(x0, *args) - x0)):.3e} >= {xtol} = required tolerance")
+    return x1
 
 class GeoFinder:
     def __init__(self, metric, christoffel_func):
@@ -158,6 +188,169 @@ class SphereGeoFinder(GeoFinder):
         Gamma[0,1,1] = -np.cos(x[0])*np.sin(x[0])
         return Gamma
 
+class AntiFerroGeoFinder(GeoFinder):
+    def __init__(self):
+        self.dim = 2
+        self.z = 1
+
+    #                                        x=(T,h)
+    def free_energy_non_minimized(self, m_s, x, z=1):
+        T,h = x
+        return 0.5*(z*(m_s[0]*m_s[1]) - h*(m_s[0] + m_s[1]) + T *(
+            (1+m_s[0])*np.log(1+m_s[0]) + (1-m_s[0])*np.log(1-m_s[0]) +
+            (1+m_s[1])*np.log(1+m_s[1]) + (1-m_s[1])*np.log(1-m_s[1]) )
+        )
+
+    #                       x=(T,h) 
+    def tranceqn(self, m_s, x, z=1):
+        m1 = np.tanh( (x[1] - self.z * m_s[1])/x[0] )
+        m2 = np.tanh( (x[1] - self.z * m_s[0])/x[0] )
+        return np.array([m1, m2])
+
+    #                           x=(T,h) 
+    def get_m_sublattices(self, x, grid=500):
+        M1, M2 = np.meshgrid(*np.linspace([-1+1e-3,-1+1e-3],[1-1e-3,1-1e-3],grid).T)
+        f = self.free_energy_non_minimized((M1,M2), x,z=self.z)
+        ix, iy = np.unravel_index(np.argmin(f), f.shape)
+        m1_0, m2_0 = M1[ix, iy], M2[ix,iy]
+        m_s = fixed_point(self.tranceqn, (m1_0,m2_0), args=(x,self.z), xtol=1e-15)
+        return m_s
+
+    #                x=(T,h)
+    def metric(self, x):
+        z = self.z
+        T,h = x
+        m1, m2 = self.get_m_sublattices(x)
+        one_minus_m1_sq = 1 - m1**2
+        one_minus_m2_sq = 1 - m2**2
+        g_TT = (-T*(one_minus_m1_sq*np.arctanh(m1)**2 + one_minus_m2_sq*np.arctanh(m2)**2) + z*one_minus_m1_sq*one_minus_m2_sq*np.arctanh(m1)*np.arctanh(m2))/(2*T**2 - 2*z**2*one_minus_m1_sq*one_minus_m2_sq)
+        g_Th = (m1*one_minus_m1_sq*(T - z*one_minus_m2_sq) + m2*one_minus_m2_sq*(T - z*one_minus_m1_sq))/(2*T**2 - 2*z**2*one_minus_m1_sq*one_minus_m2_sq)
+        g_hh = (-T*(one_minus_m1_sq+one_minus_m2_sq) + 2*z*one_minus_m1_sq*one_minus_m2_sq)/(2*T**2 - 2*z**2*one_minus_m1_sq*one_minus_m2_sq)
+        return np.array([[g_TT, g_Th], [g_Th, g_hh]])
+
+    def inv_metric(self, x):
+        T,h = x
+        z = self.z
+        m1, m2 = self.get_m_sublattices(x)
+        atanm1 = np.arctanh(m1)
+        atanm2 = np.arctanh(m2)
+        m1_sq_minus1 = m1**2 - 1
+        m2_sq_minus1 = m2**2 - 1
+        return np.array([[(2*z*m1_sq_minus1*m2_sq_minus1 - T*(-m1**2 - m2**2 + 2))*
+            2*(T**2 - z**2*m1_sq_minus1*m2_sq_minus1)/(-(T*(-m1**3 + m1 - m2**3 + m2)
+            - z*(m1 + m2)*m1_sq_minus1*m2_sq_minus1)**2 + 
+            (2*z*m1_sq_minus1*m2_sq_minus1 - T*(-m1**2 - m2**2 + 2))*
+            (z*m1_sq_minus1*m2_sq_minus1*atanm1*atanm2 
+            - T*((1-m1**2 )*atanm1**2 - m2_sq_minus1*atanm2**2))),
+            -(T*(-m1**3 + m1 - m2**3 + m2) - z*(m1 + m2)*m1_sq_minus1*m2_sq_minus1)*
+            2*(T**2 - z**2*m1_sq_minus1*m2_sq_minus1)/(-(T*(-m1**3 + m1 - m2**3 + m2) 
+            - z*(m1 + m2)*m1_sq_minus1*m2_sq_minus1)**2 + 
+            (2*z*m1_sq_minus1*m2_sq_minus1 - T*(-m1**2 - m2**2 + 2))
+            *(z*m1_sq_minus1*m2_sq_minus1*atanm1*atanm2 - 
+            T*(-m1_sq_minus1*atanm1**2 - m2_sq_minus1*atanm2**2)))], 
+            [ -(T*(-m1**3 + m1 - m2**3 + m2) - z*(m1 + m2)*m1_sq_minus1*m2_sq_minus1)*
+            2*(T**2 - z**2*m1_sq_minus1*m2_sq_minus1)/(-(T*(-m1**3 + m1 - m2**3 + m2) 
+            - z*(m1 + m2)*m1_sq_minus1*m2_sq_minus1)**2 + 
+            (2*z*m1_sq_minus1*m2_sq_minus1 + T*(m1_sq_minus1 + m2_sq_minus1))*
+            (z*m1_sq_minus1*m2_sq_minus1*atanm1*atanm2 - 
+            T*(-m1_sq_minus1*atanm1**2 - m2_sq_minus1*atanm2**2))),
+            (z*m1_sq_minus1*m2_sq_minus1*atanm1*atanm2 - 
+             T*(-m1_sq_minus1*atanm1**2 - 
+                m2_sq_minus1*atanm2**2))*2*(T**2 - z**2*m1_sq_minus1*m2_sq_minus1)/
+                (-(T*(-m1**3 + m1 - m2**3 + m2) - z*(m1 + m2)*m1_sq_minus1*m2_sq_minus1)**2 + 
+                (2*z*m1_sq_minus1*m2_sq_minus1 - T*(-m1**2 - m2**2 + 2))*
+                (z*m1_sq_minus1*m2_sq_minus1*atanm1*atanm2 - 
+                T*(-m1_sq_minus1*atanm1**2 - m2_sq_minus1*atanm2**2)))]])
+
+    def christoffel_func(self, x):
+        T,h = x
+        z = self.z
+        m1, m2 = self.get_m_sublattices(x)
+        atanm1 = np.arctanh(m1)
+        atanm2 = np.arctanh(m2)
+        m1_sq_minus1 = m1**2 - 1
+        m2_sq_minus1 = m2**2 - 1
+        Γ_T_xx = [[((T*(-m1*m1_sq_minus1 - m2*m2_sq_minus1) - z*(m1 + m2)*m1_sq_minus1*m2_sq_minus1)*(2*T*m1*(T + z*m2_sq_minus1)*m1_sq_minus1*atanm1**2 + 
+            m1_sq_minus1*(-2*T**2 - 3*T*z*m2_sq_minus1 - z**2*m1_sq_minus1*m2_sq_minus1 + 2*z*(T + z*(m1*m2 - 1))*(m1 + m2)*m2_sq_minus1*atanm2)*atanm1+
+            m2_sq_minus1*(-2*T**2 + 2*T*m2*(T + z*m1_sq_minus1)*atanm2 - 3*T*z*m1_sq_minus1 - z**2*m1_sq_minus1*m2_sq_minus1)*atanm2) + 
+            (T*(m1**2 + m2**2 - 2) + 2*z*m1_sq_minus1*m2_sq_minus1)*(T*m1_sq_minus1*(T**2 + 2*T*m1*(h - m2*z) + z*m2_sq_minus1*(2*h*m1 - 3*m1**2*z + z))*
+            atanm1**2 + m1_sq_minus1*(-2*T**2*h + T*z*(2*T*m2 - 3*h*m2_sq_minus1) + m2*z**3*m1_sq_minus1*m2_sq_minus1 + z**2*m2_sq_minus1*(3*T*m1 - h*m1**2 + h) + 
+            2*z*m2_sq_minus1*(h*(T + z*(m1*m2 - 1))*(m1 + m2) + z*(-2*T*m1*m2 +z*(-2*m1**2*m2**2 + m1**2 + m2**2)))*atanm2)*atanm1 + 
+            m2_sq_minus1*(-2*T**2*h + T*z*(2*T*m1 - 3*h*m1_sq_minus1) + T*(T**2 + 2*T*m2*(h - m1*z) + z*m1_sq_minus1*(2*h*m2 - 3*m2**2*z + z))*atanm2 + 
+            m1*z**3*m1_sq_minus1*m2_sq_minus1 + z**2*m1_sq_minus1*(3*T*m2 - h*m2**2 + h))*atanm2)/T)/((T**2 - z**2*m1_sq_minus1*m2_sq_minus1)*
+            (-(m1 + m2)**2*(T*(m1**2 - m1*m2 + m2**2 - 1) + z*m1_sq_minus1*m2_sq_minus1)**2 + (T*(m1_sq_minus1 + m2_sq_minus1) +
+            2*z*m1_sq_minus1*m2_sq_minus1)*(T*m1_sq_minus1*atanm1**2 + T*m2_sq_minus1*atanm2**2 + z*m1_sq_minus1*m2_sq_minus1*atanm1*atanm2))),
+            -(h*(T*(m1**2 + m2**2 - 2) + 2*z*m1_sq_minus1*m2_sq_minus1)*(T**2*(3*m1**4 - 4*m1**2 + 3*m2**4 - 4*m2**2 + 2) + 2*T*z*m1_sq_minus1*m2_sq_minus1*
+            (3*m1**2 + 2*m1*m2 + 3*m2**2 - 2) + 2*z**2*m1_sq_minus1*m2_sq_minus1*(-2*m1**2 + m1*m2**3 + m1*m2*(m1**2 - 2) + m2**2*(3*m1**2 - 2) + 1)) +
+            (m1 + m2)*(-T**4*(m1**2 - m1*m2 + m2**2 - 1)*(3*m1**4 - 5*m1**2 + 3*m2**4 - 5*m2**2 + 4) +T**3*z*(-9*m1**6*m2_sq_minus1 + m1**5*m2*(2*m2**2 - 5) +
+            m1**4*(-8*m2**4 + 36*m2**2 - 25) +2*m1**3*m2*(m2**4 - 6*m2**2 + 7) + m1**2*(-9*m2**2*(m2**4 - 4*m2**2 + 6) + 23) +
+            m1*m2*(-5*m2**4 + 14*m2**2 - 10) + 9*m2**6 - 25*m2**4 + 23*m2**2 - 6) -T**2*z**2*m1_sq_minus1*m2_sq_minus1*(2*m1**5*m2 + 2*m1**4*(5*m2**2 - 3) +
+            m1**3*(2*m2**3 + m2) + m1**2*(10*m2**4 - 24*m2**2 + 5) + m1*m2*(2*m2**4 + m2**2 - 4) -6*m2**4 + 5*m2**2 + 2) - 
+            T*z**3*m1_sq_minus1*m2_sq_minus1*(2*m1**5*m2*m2_sq_minus1 + m1**4*(6*m2**4 + 3*m2**2 - 7) + 2*m1**3*m2*(m2**4 - 3*m2**2 + 2) + m1**2*(3*m2**4 - 22*m2**2 + 15)-
+            2*m1*m2*m2_sq_minus1**2 - 7*m2**4 + 15*m2**2 - 6) - 2*z**4*m1_sq_minus1**2*m2_sq_minus1**2*(m1**2*(5*m2**2 - 3) - 3*m2**2 + 1)))/
+            (T*(T**2 - z**2*m1_sq_minus1*m2_sq_minus1)*(-(m1 + m2)**2*(T*(m1**2 - m1*m2 + m2**2 - 1) + z*m1_sq_minus1*m2_sq_minus1)**2 +
+            (T*(m1**2 + m2**2 - 2) + 2*z*m1_sq_minus1*m2_sq_minus1)*(T*m1_sq_minus1*atanm1**2 + T*m2_sq_minus1*atanm2**2 + z*m1_sq_minus1*m2_sq_minus1*atanm1*atanm2)))],
+            [-(h*(T*(m1**2 + m2**2 - 2) + 2*z*m1_sq_minus1*m2_sq_minus1)*(T**2*(3*m1**4 - 4*m1**2 + 3*m2**4 - 4*m2**2 + 2) + 
+            2*T*z*m1_sq_minus1*m2_sq_minus1*(3*m1**2 + 2*m1*m2 + 3*m2**2 - 2) + 2*z**2*m1_sq_minus1*m2_sq_minus1*(-2*m1**2 + m1*m2**3 + m1*m2*(m1**2 - 2) + m2**2*(3*m1**2 - 2) + 1)) + 
+            (m1 + m2)*(-T**4*(m1**2 - m1*m2 + m2**2 - 1)*(3*m1**4 - 5*m1**2 + 3*m2**4 - 5*m2**2 + 4) +T**3*z*(-9*m1**6*m2_sq_minus1 + m1**5*m2*(2*m2**2 - 5) + 
+            m1**4*(-8*m2**4 + 36*m2**2 - 25) + 2*m1**3*m2*(m2**4 - 6*m2**2 + 7) + m1**2*(-9*m2**2*(m2**4 - 4*m2**2 + 6) + 23) +
+            m1*m2*(-5*m2**4 + 14*m2**2 - 10) + 9*m2**6 - 25*m2**4 + 23*m2**2 - 6) -T**2*z**2*m1_sq_minus1*m2_sq_minus1*(2*m1**5*m2 + 2*m1**4*(5*m2**2 - 3) + m1**3*(2*m2**3 + m2) +
+            m1**2*(10*m2**4 - 24*m2**2 + 5) + m1*m2*(2*m2**4 + m2**2 - 4) - 6*m2**4 + 5*m2**2 + 2) -T*z**3*m1_sq_minus1*m2_sq_minus1*(2*m1**5*m2*m2_sq_minus1 + 
+            m1**4*(6*m2**4 + 3*m2**2 - 7) +2*m1**3*m2*(m2**4 - 3*m2**2 + 2) + m1**2*(3*m2**4 - 22*m2**2 + 15) - 2*m1*m2*m2_sq_minus1**2 - 7*m2**4 + 15*m2**2 - 6)
+             - 2*z**4*m1_sq_minus1**2*m2_sq_minus1**2*(m1**2*(5*m2**2 - 3) - 3*m2**2 + 1)))/
+            (T*(T**2 - z**2*m1_sq_minus1*m2_sq_minus1)*(-(m1 + m2)**2*(T*(m1**2 - m1*m2 + m2**2 - 1) + z*m1_sq_minus1*m2_sq_minus1)**2 +
+            (T*(m1**2 + m2**2 - 2) + 2*z*m1_sq_minus1*m2_sq_minus1)*(T*m1_sq_minus1*atanm1**2 + T*m2_sq_minus1*atanm2**2 + z*m1_sq_minus1*m2_sq_minus1*
+            atanm1*atanm2))), (2*(m1 + m2)*(T*(-m1**3 + m1 - m2**3 + m2) - z*(m1 + m2)*m1_sq_minus1*m2_sq_minus1)*(T**2*(m1**2 - m1*m2 + m2**2 - 1) + 
+            3*T*z*m1_sq_minus1*m2_sq_minus1 +2*z**2*m1_sq_minus1*m2_sq_minus1*(m1*m2 - 1)) + (T*(m1**2 + m2**2 - 2) + 2*z*m1_sq_minus1*
+            m2_sq_minus1)*(T**3*(m1**2 + m2**2 - 2) + 2*T**2*(h*(m1**3 - m1 + m2**3 - m2) - m1*m2*z*(m1**2 + m2**2 - 2)) + T*z*m1_sq_minus1*m2_sq_minus1*
+            (6*h*(m1 + m2)-z*(3*m1**2 + 8*m1*m2 + 3*m2**2 - 2)) + 4*z**2*m1_sq_minus1*m2_sq_minus1*(h*(m1 + m2)*(m1*m2 - 1) + z*(-2*m1**2*m2**2 + m1**2 + m2**2)))/T)/
+            ((T**2 - z**2*m1_sq_minus1*m2_sq_minus1)*(-(m1 + m2)**2*(T*(m1**2 - m1*m2 + m2**2 - 1) + z*m1_sq_minus1*m2_sq_minus1)**2 + (T*(m1**2 + m2**2 - 2) + 
+            2*z*m1_sq_minus1*m2_sq_minus1)*(T*m1_sq_minus1*atanm1**2 + T*m2_sq_minus1*atanm2**2 + z*m1_sq_minus1*m2_sq_minus1*atanm1*atanm2)))]]
+
+        Γ_h_xx = [[(-(T*m1_sq_minus1*atanm1**2 + T*m2_sq_minus1*atanm2**2 + z*m1_sq_minus1*m2_sq_minus1*atanm1*atanm2)*
+            (2*T*m1*(T + z*m2_sq_minus1)*m1_sq_minus1*atanm1**2 + m1_sq_minus1*(-2*T**2 - 3*T*z*m2_sq_minus1 - z**2*m1_sq_minus1*m2_sq_minus1 +
+            2*z*(T + z*(m1*m2 - 1))*(m1 + m2)*m2_sq_minus1*atanm2)*atanm1 + m2_sq_minus1*(-2*T**2 + 2*T*m2*(T + z*m1_sq_minus1)*atanm2 -
+            3*T*z*m1_sq_minus1 - z**2*m1_sq_minus1*m2_sq_minus1)*atanm2) + (m1 + m2)*(T*(m1**2 - m1*m2 + m2**2 - 1) +
+            z*m1_sq_minus1*m2_sq_minus1)*(T*m1_sq_minus1*(T**2 + 2*T*m1*(h - m2*z) + z*m2_sq_minus1*(2*h*m1 - 3*m1**2*z + z))*
+            atanm1**2 + m1_sq_minus1*(-2*T**2*h + T*z*(2*T*m2 - 3*h*m2_sq_minus1) + m2*z**3*m1_sq_minus1*m2_sq_minus1 +
+            z**2*m2_sq_minus1*(3*T*m1 - h*m1**2 + h) + 2*z*m2_sq_minus1*(h*(T + z*(m1*m2 - 1))*(m1 + m2) +
+            z*(-2*T*m1*m2 + z*(-2*m1**2*m2**2 + m1**2 + m2**2)))*atanm2)*atanm1 + m2_sq_minus1*(-2*T**2*h +
+            T*z*(2*T*m1 - 3*h*m1_sq_minus1) + T*(T**2 + 2*T*m2*(h - m1*z) + z*m1_sq_minus1*(2*h*m2 - 3*m2**2*z + z))*atanm2 +
+            m1*z**3*m1_sq_minus1*m2_sq_minus1 + z**2*m1_sq_minus1*(3*T*m2 - h*m2**2 + h))*atanm2)/T)/
+            ((T**2 - z**2*m1_sq_minus1*m2_sq_minus1)*(-(m1 + m2)**2*(T*(m1**2 - m1*m2 + m2**2 - 1) +z*m1_sq_minus1*m2_sq_minus1)**2 + 
+            (T*(m1**2 + m2**2 - 2) + 2*z*m1_sq_minus1*m2_sq_minus1)*(T*m1_sq_minus1*atanm1**2 + T*m2_sq_minus1*atanm2**2 + 
+            z*m1_sq_minus1*m2_sq_minus1*atanm1*atanm2))),
+            ((T**2*(3*m1**4 - 4*m1**2 + 3*m2**4 - 4*m2**2 + 2) + 2*T*z*m1_sq_minus1*m2_sq_minus1*(3*m1**2 + 2*m1*m2 + 3*m2**2 - 2) +
+            2*z**2*m1_sq_minus1*m2_sq_minus1*(m1**3*m2 + m1**2*(3*m2**2 - 2) + m1*m2*(m2**2 - 2) - 2*m2**2 + 1))*(T*m1_sq_minus1*atanm1**2 +
+            T*m2_sq_minus1*atanm2**2 + z*m1_sq_minus1*m2_sq_minus1*atanm1*atanm2) +
+            (m1 + m2)*(T*(m1**2 - m1*m2 + m2**2 - 1) + z*m1_sq_minus1*m2_sq_minus1)*(T**2*(T*(-m1**3 + m1 - m2**3 + m2) + h*(-3*m1**4 + 4*m1**2 - 3*m2**4 + 4*m2**2 - 2)) +
+            T*z*(T*(m1*m2*(3*m1**3 - 4*m1 + 3*m2**3 - 4*m2) + m1 + m2) - 2*h*m1_sq_minus1*m2_sq_minus1*(3*m1**2 + 2*m1*m2 + 3*m2**2 - 2)) +
+            z**3*(m1 - 1)*(m1 + 1)*(m1 + m2)*(m2 - 1)*(m2 + 1)*(m1**2*(5*m2**2 - 3) - 3*m2**2 + 1) -
+            z**2*m1_sq_minus1*m2_sq_minus1*(-T*(m1 + m2)*(4*m1**2 + m1*m2 + 4*m2**2 - 3) + 2*h*(m1**3*m2 + m1**2*(3*m2**2 - 2) + m1*m2*(m2**2 - 2) - 2*m2**2 + 1)))/T)/
+            ((T**2 - z**2*m1_sq_minus1*m2_sq_minus1)*(-(m1 + m2)**2*(T*(m1**2 - m1*m2 + m2**2 - 1) + z*m1_sq_minus1*m2_sq_minus1)**2 +
+            (T*(m1**2 + m2**2 - 2) + 2*z*m1_sq_minus1*m2_sq_minus1)*(T*m1_sq_minus1*atanm1**2 +
+            T*m2_sq_minus1*atanm2**2 + z*m1_sq_minus1*m2_sq_minus1*atanm1*atanm2)))], 
+            [((T**2*(3*m1**4 - 4*m1**2 + 3*m2**4 - 4*m2**2 + 2) + 2*T*z*m1_sq_minus1*m2_sq_minus1*(3*m1**2 + 2*m1*m2 + 3*m2**2 - 2) +
+            2*z**2*m1_sq_minus1*m2_sq_minus1*(m1**3*m2 + m1**2*(3*m2**2 - 2) + m1*m2*(m2**2 - 2) - 2*m2**2 + 1))*(T*m1_sq_minus1*atanm1**2 + 
+            T*m2_sq_minus1*atanm2**2 + z*m1_sq_minus1*m2_sq_minus1*atanm1*atanm2) + 
+            (m1 + m2)*(T*(m1**2 - m1*m2 + m2**2 - 1) + z*m1_sq_minus1*m2_sq_minus1)*(T**2*(T*(-m1**3 + m1 - m2**3 + m2) + h*(-3*m1**4 + 4*m1**2 - 3*m2**4 + 4*m2**2 - 2)) +
+            T*z*(T*(m1*m2*(3*m1**3 - 4*m1 + 3*m2**3 - 4*m2) + m1 + m2) - 2*h*m1_sq_minus1*m2_sq_minus1*(3*m1**2 + 2*m1*m2 + 3*m2**2 - 2)) +
+            z**3*(m1 - 1)*(m1 + 1)*(m1 + m2)*(m2 - 1)*(m2 + 1)*(m1**2*(5*m2**2 - 3) - 3*m2**2 + 1) -
+            z**2*m1_sq_minus1*m2_sq_minus1*(-T*(m1 + m2)*(4*m1**2 + m1*m2 + 4*m2**2 - 3) + 2*h*(m1**3*m2 + m1**2*(3*m2**2 - 2) + m1*m2*(m2**2 - 2) - 2*m2**2 + 1)))/T)/
+            ((T**2 - z**2*m1_sq_minus1*m2_sq_minus1)*(-(m1 + m2)**2*(T*(m1**2 - m1*m2 + m2**2 - 1) +
+            z*m1_sq_minus1*m2_sq_minus1)**2 + (T*(m1**2 + m2**2 - 2) + 2*z*m1_sq_minus1*m2_sq_minus1)*(T*m1_sq_minus1*atanm1**2 + T*m2_sq_minus1*atanm2**2 +
+            z*m1_sq_minus1*m2_sq_minus1*atanm1*atanm2))), 
+            (m1 + m2)*(-2*(T**2*(m1**2 - m1*m2 + m2**2 - 1) + 3*T*z*m1_sq_minus1*m2_sq_minus1 + 2*z**2*m1_sq_minus1*m2_sq_minus1*(m1*m2 - 1))*(T*m1_sq_minus1*atanm1**2 +
+            T*m2_sq_minus1*atanm2**2 + z*m1_sq_minus1*m2_sq_minus1*atanm1*atanm2) +
+            (T*(m1**2 - m1*m2 + m2**2 - 1) + z*m1_sq_minus1*m2_sq_minus1)*(T**3*(m1**2 + m2**2 - 2) + 2*T**2*(h*(m1**3 - m1 + m2**3 - m2) -
+            m1*m2*z*(m1**2 + m2**2 - 2)) +T*z*m1_sq_minus1*m2_sq_minus1*(6*h*(m1 + m2) - z*(3*m1**2 + 8*m1*m2 + 3*m2**2 - 2)) +
+            4*z**2*m1_sq_minus1*m2_sq_minus1*(h*(m1 + m2)*(m1*m2 - 1) + z*(-2*m1**2*m2**2 + m1**2 + m2**2)))/T)/((T**2 - z**2*m1_sq_minus1*m2_sq_minus1)*
+            (-(m1 + m2)**2*(T*(m1**2 - m1*m2 + m2**2 - 1) + z*m1_sq_minus1*m2_sq_minus1)**2 +(T*(m1**2 + m2**2 - 2) + 2*z*m1_sq_minus1*m2_sq_minus1)*
+            (T*m1_sq_minus1*atanm1**2 + T*m2_sq_minus1*atanm2**2 + z*m1_sq_minus1*m2_sq_minus1*atanm1*atanm2)))]]
+
+        return np.array([Γ_T_xx, Γ_h_xx])
+
+
 # Example usage
 if __name__ == "__main__":
     geo = InformationGeoFinder(lambda β, α: β + 
@@ -172,9 +365,9 @@ if __name__ == "__main__":
     x0 = np.array([1,1])
     x1 = np.array([2,1])
     
-    path = geo.path(x0, np.deg2rad(-135.51805), 5000, v0 = 1000)
-#                                  -135.518 - up-left
-#                                  -135.5181 - down-right
+    path = geo.path(x0, np.deg2rad(-135.518053), 5000, v0 = 1000)
+#                                  -135.518052 - up-left
+#                                  -135.518055 - down-right
 
     # res = geo(x0, x1, tol=1e-2)
     # path = res["path"]

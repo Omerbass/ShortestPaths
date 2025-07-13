@@ -33,7 +33,7 @@ def fixed_point(func:Callable, start:float, args=(), xtol:float=1e-9, maxiter:in
         if np.max(abs(x1 - x0)) < xtol:
             break
         if np.any(np.isnan(x1)):
-            raise Exception(f"got NaN in fixed point. last value was {x0}")
+            raise Exception(f"got NaN in fixed point. last x was {x0}, args={args}")
         x0 = x1
     if itr == maxiter - 1:
         warnings.warn(f"Tolerance not reached\nachieved tolerance = {np.max(abs(func(x0, *args) - x0)):.3e} >= {xtol} = required tolerance")
@@ -50,12 +50,15 @@ class GeoFinder:
         x, v = y[:dim], y[dim:-1]
         Gamma = self.christoffel_func(x)
         dvdt = -np.einsum('ijk,j,k->i', Gamma, v, v)  # Geodesic equation
-        return np.concatenate([v, dvdt, [np.sqrt(np.einsum("ij,i,j", self.metric(x), v, v))]])
+        # print(self.metric(x))
+        step = np.concatenate([v, dvdt, [np.sqrt(np.einsum("ij,i,j", self.metric(x), v, v))]])
+        # print(step)
+        return step
 
     def apply_limits(self, y):
         return y
     
-    def path(self, x0, alpha, dist, tol=1e-2, v0 = 1):
+    def path(self, x0, alpha, dist, tol=1e-5, v0 = 1):
         """Find the geodesic path from x0 to x1"""
         stopevent = lambda t, y, *args: dist - y[-1] + 1e-5
         stopevent.terminal = True
@@ -196,9 +199,9 @@ class AntiFerroGeoFinder(GeoFinder):
     #                                        x=(T,h)
     def free_energy_non_minimized(self, m_s, x, z=1):
         T,h = x
-        return 0.5*(z*(m_s[0]*m_s[1]) - h*(m_s[0] + m_s[1]) + T *(
-            (1+m_s[0])*np.log(1+m_s[0]) + (1-m_s[0])*np.log(1-m_s[0]) +
-            (1+m_s[1])*np.log(1+m_s[1]) + (1-m_s[1])*np.log(1-m_s[1]) )
+        return 0.5*(z*(m_s[0]*m_s[1]) - h*(m_s[0] + m_s[1]) + 0.5 * T *(
+        sc.special.xlogy(1+m_s[0], 1+m_s[0]) + sc.special.xlogy(1-m_s[0], 1-m_s[0]) +
+        sc.special.xlogy(1+m_s[1], 1+m_s[1]) + sc.special.xlogy(1-m_s[1], 1-m_s[1]) )
         )
 
     #                       x=(T,h) 
@@ -209,11 +212,17 @@ class AntiFerroGeoFinder(GeoFinder):
 
     #                           x=(T,h) 
     def get_m_sublattices(self, x, grid=500):
+        assert np.nan not in x, "x contains NaN values"
+        # print(x)
         M1, M2 = np.meshgrid(*np.linspace([-1+1e-3,-1+1e-3],[1-1e-3,1-1e-3],grid).T)
         f = self.free_energy_non_minimized((M1,M2), x,z=self.z)
         ix, iy = np.unravel_index(np.argmin(f), f.shape)
         m1_0, m2_0 = M1[ix, iy], M2[ix,iy]
-        m_s = fixed_point(self.tranceqn, (m1_0,m2_0), args=(x,self.z), xtol=1e-15)
+        if m1_0 == m2_0:
+            m1_0 = np.min([m1_0 + 1e-2, 0.999])
+            m2_0 = np.max([m2_0 - 1e-2, -0.999])
+        # print("m0:", (m1_0, m2_0))
+        m_s = fixed_point(self.tranceqn, (m1_0,m2_0), args=(x,self.z), xtol=1e-13)
         return m_s
 
     #                x=(T,h)
@@ -223,9 +232,9 @@ class AntiFerroGeoFinder(GeoFinder):
         m1, m2 = self.get_m_sublattices(x)
         one_minus_m1_sq = 1 - m1**2
         one_minus_m2_sq = 1 - m2**2
-        g_TT = (-T*(one_minus_m1_sq*np.arctanh(m1)**2 + one_minus_m2_sq*np.arctanh(m2)**2) + z*one_minus_m1_sq*one_minus_m2_sq*np.arctanh(m1)*np.arctanh(m2))/(2*T**2 - 2*z**2*one_minus_m1_sq*one_minus_m2_sq)
-        g_Th = (m1*one_minus_m1_sq*(T - z*one_minus_m2_sq) + m2*one_minus_m2_sq*(T - z*one_minus_m1_sq))/(2*T**2 - 2*z**2*one_minus_m1_sq*one_minus_m2_sq)
-        g_hh = (-T*(one_minus_m1_sq+one_minus_m2_sq) + 2*z*one_minus_m1_sq*one_minus_m2_sq)/(2*T**2 - 2*z**2*one_minus_m1_sq*one_minus_m2_sq)
+        g_TT = -(-T*(one_minus_m1_sq*np.arctanh(m1)**2 + one_minus_m2_sq*np.arctanh(m2)**2) + z*one_minus_m1_sq*one_minus_m2_sq*np.arctanh(m1)*np.arctanh(m2))/(2*T**2 - 2*z**2*one_minus_m1_sq*one_minus_m2_sq)
+        g_Th = -(m1*one_minus_m1_sq*(T - z*one_minus_m2_sq) + m2*one_minus_m2_sq*(T - z*one_minus_m1_sq))/(2*T**2 - 2*z**2*one_minus_m1_sq*one_minus_m2_sq)
+        g_hh = -(-T*(one_minus_m1_sq+one_minus_m2_sq) + 2*z*one_minus_m1_sq*one_minus_m2_sq)/(2*T**2 - 2*z**2*one_minus_m1_sq*one_minus_m2_sq)
         return np.array([[g_TT, g_Th], [g_Th, g_hh]])
 
     def inv_metric(self, x):
@@ -236,7 +245,7 @@ class AntiFerroGeoFinder(GeoFinder):
         atanm2 = np.arctanh(m2)
         m1_sq_minus1 = m1**2 - 1
         m2_sq_minus1 = m2**2 - 1
-        return np.array([[(2*z*m1_sq_minus1*m2_sq_minus1 - T*(-m1**2 - m2**2 + 2))*
+        return -np.array([[(2*z*m1_sq_minus1*m2_sq_minus1 - T*(-m1**2 - m2**2 + 2))*
             2*(T**2 - z**2*m1_sq_minus1*m2_sq_minus1)/(-(T*(-m1**3 + m1 - m2**3 + m2)
             - z*(m1 + m2)*m1_sq_minus1*m2_sq_minus1)**2 + 
             (2*z*m1_sq_minus1*m2_sq_minus1 - T*(-m1**2 - m2**2 + 2))*
@@ -348,38 +357,40 @@ class AntiFerroGeoFinder(GeoFinder):
             (-(m1 + m2)**2*(T*(m1**2 - m1*m2 + m2**2 - 1) + z*m1_sq_minus1*m2_sq_minus1)**2 +(T*(m1**2 + m2**2 - 2) + 2*z*m1_sq_minus1*m2_sq_minus1)*
             (T*m1_sq_minus1*atanm1**2 + T*m2_sq_minus1*atanm2**2 + z*m1_sq_minus1*m2_sq_minus1*atanm1*atanm2)))]]
 
-        return np.array([Γ_T_xx, Γ_h_xx])
+        # print("Γ_T_xx:", Γ_T_xx, "\nΓ_h_xx:", Γ_h_xx)
+
+        return -np.array([Γ_T_xx, Γ_h_xx])
 
 
 # Example usage
 if __name__ == "__main__":
-    geo = InformationGeoFinder(lambda β, α: β + 
-        np.log(np.cosh(α) + np.sqrt(np.exp(-4*α) + np.sinh(α)**2)), dx=1e-4, dim=2)
+    # geo = InformationGeoFinder(lambda β, α: β + 
+    #     np.log(np.cosh(α) + np.sqrt(np.exp(-4*α) + np.sinh(α)**2)), dx=1e-4, dim=2)
 
     # geo = SphereGeoFinder()
+
+    geo = AntiFerroGeoFinder()
 
     # Start and end points
     # x0 = np.array([np.pi/2 - 0.1, 0])
     # x1 = np.array([np.pi/2 - 0.1, 1.8*np.pi/2])
     
-    x0 = np.array([1,1])
-    x1 = np.array([2,1])
+    x0 = np.array([0.5,0.1])
+    x1 = np.array([1,0.3])
     
-    path = geo.path(x0, np.deg2rad(-135.518053), 5000, v0 = 1000)
-#                                  -135.518052 - up-left
-#                                  -135.518055 - down-right
+    # path = geo.path(x0, np.deg2rad(-135.518053), 5000, v0 = 1000)
 
-    # res = geo(x0, x1, tol=1e-2)
-    # path = res["path"]
-    # alpha = res["α0"]
-    # mindist = res["dist"]
-    # print('Initial "angle:"', np.rad2deg(alpha))
-    # print('minimal distance =', mindist)
+    res = geo(x0, x1, tol=1e-2)
+    path = res["path"]
+    alpha = res["α0"]
+    mindist = res["dist"]
+    print('Initial "angle:"', np.rad2deg(alpha))
+    print('minimal distance =', mindist)
 
     plt.figure(figsize=(8, 6))
-    plt.plot(path[1], path[0], label="Geodesic")
-    plt.scatter(x0[1], x0[0], c='r', label='Start', s=100)
-    plt.scatter(x1[1], x1[0], c='g', label='End', s=100)
-    plt.xlabel("β")
-    plt.ylabel("α")
+    plt.plot(path[0], path[1], label="Geodesic")
+    plt.scatter(x0[0], x0[1], c='r', label='Start', s=100)
+    plt.scatter(x1[0], x1[1], c='g', label='End', s=100)
+    plt.xlabel("h")
+    plt.ylabel("T")
     plt.show()

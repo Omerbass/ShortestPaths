@@ -1,14 +1,11 @@
 import itertools
 import numpy as np
 import scipy as sc
-from scipy.optimize import minimize
 from scipy.integrate import solve_ivp
 from matplotlib import pyplot as plt
-from scipy.spatial.distance import euclidean
-from tqdm.notebook import tqdm, trange
-from p_tqdm import p_map
+# from p_tqdm import p_map
 from inspect import signature
-from typing import Callable, Iterable, Union
+from typing import Callable #, Iterable, Union
 import warnings
 import resource
 
@@ -95,7 +92,7 @@ class GeoFinder:
             return np.min(np.linalg.norm((xs.T - x1).T.T, axis=1))
 
         def shots(objective, alphas):
-            mindist = list(p_map(objective, alphas)) #, tqdm=tqdm
+            mindist = list(map(objective, alphas)) #, tqdm=tqdm
             return np.argmin(mindist), min(mindist)
 
         alpharange = (0, 2*np.pi)

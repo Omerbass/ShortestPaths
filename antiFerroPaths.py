@@ -1,7 +1,6 @@
 import numpy as np
 import argparse
 import shortestPaths
-from matplotlib import pyplot as plt
 
 if __name__=="__main__":
     parser = argparse.ArgumentParser(prog="MFAFGeodesicFinder", description="Mean field anti-ferromagnet static metric geodesic path finder")

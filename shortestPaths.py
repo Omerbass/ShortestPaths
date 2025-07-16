@@ -10,6 +10,7 @@ from p_tqdm import p_map
 from inspect import signature
 from typing import Callable, Iterable, Union
 import warnings
+import resource
 
 def fixed_point(func:Callable, start:float, args=(), xtol:float=1e-9, maxiter:int=5000, method="iteration"):
     """
@@ -40,18 +41,24 @@ def fixed_point(func:Callable, start:float, args=(), xtol:float=1e-9, maxiter:in
     return x1
 
 class GeoFinder:
-    def __init__(self, metric, christoffel_func):
+    def __init__(self, metric, christoffel_func, dim):
         self.metric = metric
         self.christoffel_func = christoffel_func
+        self.dim = dim
 
     def geodesic_equation(self, t, y):
-        """y = [x^i, v^i] where v^i = dx^i/dt"""
-        dim = len(y) // 2
-        x, v = y[:dim], y[dim:-1]
+        """y = [x^i, v^i] where v^i = dx^i/dt
+        assumes y:=(x, v) where x is the position and v is the velocity"""
+        x, v = y[:self.dim], y[self.dim:]
         Gamma = self.christoffel_func(x)
-        dvdt = -np.einsum('ijk,j,k->i', Gamma, v, v)  # Geodesic equation
-        # print(self.metric(x))
-        step = np.concatenate([v, dvdt, [np.sqrt(np.einsum("ij,i,j", self.metric(x), v, v))]])
+        dvdt = -np.einsum('ijk,j,k->i', Gamma, v, v)
+        return np.concatenate([v, dvdt])
+
+    def geodesic_equation_add_total_length(self, t, y):
+        """y = [x^i, v^i] where v^i = dx^i/dt
+        assumes y:=(x, v, total_length) where x is the position, v is the velocity and total_length is the accumulated length"""
+        x, v = y[:self.dim], y[self.dim:]
+        step = np.concatenate([self.geodesic_equation(t, y[:-1]), [np.sqrt(np.einsum("ij,i,j", self.metric(x), v, v))]])
         # print(step)
         return step
 
@@ -62,16 +69,15 @@ class GeoFinder:
         """Find the geodesic path from x0 to x1"""
         stopevent = lambda t, y, *args: dist - y[-1] + 1e-5
         stopevent.terminal = True
-        dim = len(x0)
         y0 = np.concatenate([x0, [v0*np.cos(alpha), v0*np.sin(alpha)], [0]])
         sol = solve_ivp(self.geodesic_equation, (0, dist*20), y0, max_step=tol*0.5, events=(stopevent, ))
-        path = self.apply_limits(sol.y[:dim,:])
+        path = self.apply_limits(sol.y[:self.dim,:])
         return path
 
     # shooting + compartmentalizing
     def shooting_and_comp(self, x0, x1, tol=1e-2):
         """Find the initial velocity that connects x0 to x1"""
-        dim = len(x0)
+        dim = self.dim
         straight_path = np.linspace(x0, x1, 100)
         straight_dist = np.sum([np.sqrt((x-y).T @ self.metric((x+y)/2) @ (x-y)) for x,y in zip(straight_path[1:], straight_path[:-1])])
         stopevent = lambda t, y, *args: straight_dist * 1.02 - y[-1]
@@ -80,7 +86,7 @@ class GeoFinder:
         def objective(alpha):
             # Solve the geodesic equation with initial conditions
             y0 = np.concatenate([x0, [np.cos(alpha), np.sin(alpha)], [0]])
-            sol = solve_ivp(self.geodesic_equation, (0, straight_dist*20), y0, 
+            sol = solve_ivp(self.geodesic_equation_add_total_length, (0, straight_dist*20), y0, 
                             max_step=tol*0.5, events=(stopevent, ))
             xs = self.apply_limits(sol.y[:dim, :])
             # print(np.linalg.norm(xs.T - x1, axis=1))
@@ -94,8 +100,8 @@ class GeoFinder:
 
         alpharange = (0, 2*np.pi)
         # mindist=tol+1
-        N = 40
-        for _ in range(100):
+        N = 50
+        for _ in range(6):
             alphas = np.linspace(alpharange[0], alpharange[1], N+1)
             dalpha = (alpharange[1] - alpharange[0])/N
             print("alpharange:", np.rad2deg(alpharange))
@@ -107,19 +113,51 @@ class GeoFinder:
                 break
     
         y0 = np.concatenate([x0, [np.cos(alphamin), np.sin(alphamin)], [0]])
-        sol = solve_ivp(self.geodesic_equation, (0, straight_dist*20), y0, 
+        sol = solve_ivp(self.geodesic_equation_add_total_length, (0, straight_dist*20), y0, 
                         max_step=tol*0.5, events=(stopevent, ))
 
         ixf = np.argmin(np.linalg.norm(sol.y[:self.dim,:].T-x1, axis=1))
         geodesic_dist = sol.y[-1, ixf]
         return alphamin, geodesic_dist,{"mindist": mindist, "alpharange": alpharange, "ixf": ixf, "sol": sol}
     
-    def __call__(self, x0, x1, tol=1e-2):
+    def bvpsolver(self, x0, x1, tol=None):
+        t = np.linspace(0,1,1001)
+        y_linear = np.linspace(np.append(x0, [0,1]),np.append(x1,[0,1]),len(t)).T
+        def geodesics_for_bvp(t, y):
+            dydt = np.array([self.geodesic_equation(t,y0) for y0 in y.T]).T
+            return dydt
+            
+        bc = lambda y1, y2: np.concatenate([y1[:2] - x0, y2[:2] - x1])
+
+        if tol:
+            return sc.integrate.solve_bvp(geodesics_for_bvp, bc, t, y_linear, tol=tol)
+        else:
+            return sc.integrate.solve_bvp(geodesics_for_bvp, bc, t, y_linear)
+
+    def shooting_method(self, x0, x1, tol=1e-2):
         """Find the geodesic path from x0 to x1"""
         alpha, geodesic_dist, meta = self.shooting_and_comp(x0, x1, tol)
         path = meta["sol"].y[:self.dim, :meta["ixf"]+1]
 
         return {"path": path, "α0": alpha, "dist": geodesic_dist, "meta": meta}
+    
+    def __call__(self, x0, x1, tol=None):
+        """
+        Find the geodesic path from x0 to x1.
+        
+        Parameters:
+        x0 (array-like): Starting point of the path.
+        y0 (array-like): Ending point of the path.
+        tol (float, optional): Tolerance for the path finding. Default is None.
+        Returns:
+        dict: A dictionary containing the path, distance, and other metadata.
+        """
+        sol = self.bvpsolver(x0, x1, tol)
+        path = sol.y[:self.dim, :]
+        sol_func = sol.sol
+        geodesic_dist = np.sum([np.sqrt((x-y).T @ self.metric((x+y)/2) @ (x-y)) for x,y in zip(path[:, 1:].T, path[:,:-1].T)])
+
+        return {"path": path, "dist": geodesic_dist, "meta": {"sol": sol, "sol_func": sol_func}}
 
 class InformationGeoFinder(GeoFinder):
     def __init__(self, freeEnergy, dx = 1e-4, dim=None):
@@ -364,21 +402,20 @@ class AntiFerroGeoFinder(GeoFinder):
 
 # Example usage
 if __name__ == "__main__":
-    # geo = InformationGeoFinder(lambda β, α: β + 
-    #     np.log(np.cosh(α) + np.sqrt(np.exp(-4*α) + np.sinh(α)**2)), dx=1e-4, dim=2)
-
+    print("max memusage - beginning of program:", resource.getrusage(resource.RUSAGE_SELF).ru_maxrss)
+    
     # geo = SphereGeoFinder()
-
+    
+    # x0 = np.array([0.2,0.])
+    # x1 = np.array([0.2, np.pi/3])
+    
     geo = AntiFerroGeoFinder()
+    
+    x0 = np.array([0.5,-0.1])
+    x1 = np.array([(tc := 0.5), tc/2 * np.log((1+np.sqrt(1-tc))/(1-np.sqrt(1-tc))) + np.sqrt(1-tc)])
+    
 
-    # Start and end points
-    # x0 = np.array([np.pi/2 - 0.1, 0])
-    # x1 = np.array([np.pi/2 - 0.1, 1.8*np.pi/2])
-    
-    x0 = np.array([0.5,0.1])
-    x1 = np.array([1,0.3])
-    
-    # path = geo.path(x0, np.deg2rad(-135.518053), 5000, v0 = 1000)
+    # path = geo.path(x0, np.deg2rad(-30), 5000, v0 = 1000)
 
     res = geo(x0, x1, tol=1e-2)
     path = res["path"]
@@ -387,10 +424,21 @@ if __name__ == "__main__":
     print('Initial "angle:"', np.rad2deg(alpha))
     print('minimal distance =', mindist)
 
+    # res = geo.bvpsolver(x0, x1)
+    # path = res.y[:2,:]
+    pathlength = np.sum([np.sqrt((x-y).T @ geo.metric((x+y)/2) @ (x-y)) for x,y in zip(path[:, 1:].T, path[:,:-1].T)])
+    print("path length =", pathlength)
+
     plt.figure(figsize=(8, 6))
     plt.plot(path[0], path[1], label="Geodesic")
     plt.scatter(x0[0], x0[1], c='r', label='Start', s=100)
     plt.scatter(x1[0], x1[1], c='g', label='End', s=100)
-    plt.xlabel("h")
-    plt.ylabel("T")
+    tc = np.linspace(0.0001, 1, 100)
+    mc = np.sqrt(1-tc)
+    plt.plot(tc, tc/2 * np.log((1+mc)/(1-mc)) + mc, "k")
+    plt.plot(tc, -tc/2 * np.log((1+mc)/(1-mc)) - mc, "k")
+    plt.xlabel("T")
+    plt.ylabel("h")
     plt.show()
+
+    print("max memusage:", resource.getrusage(resource.RUSAGE_SELF).ru_maxrss)

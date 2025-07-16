@@ -15,17 +15,15 @@ if __name__ == "__main__":
     os.makedirs(f"{args.folder}/stderr", exist_ok=True)
     os.makedirs(f"{args.folder}/stdout", exist_ok=True)
 
-    Tf = np.linspace(0,1, 21)
-    hf = np.array([tc/2 * np.log((1+np.sqrt(1-tc))/(1-np.sqrt(1-tc))) + np.sqrt(1-tc) for tc in Tf]) * 0.99
-    Tf *= 0.99
+    Tf = np.linspace(0,1, 3)
+    hf = np.array([tc/2 * np.log((1+np.sqrt(1-tc))/(1-np.sqrt(1-tc))) + np.sqrt(1-tc) for tc in Tf]) * 0.9
+    Tf *= 0.9
 
     cmd = lambda inp: ["python3", "antiFerroPaths.py", str(inp["T0"]), str(inp["h0"]), str(inp["T1"]), str(inp["h1"]), "-o", inp["program_output"]]
     
     cmd_cluster = lambda inp: ["bsub", "-J", inp["jobname"] , "-R", f"rusage[mem={inp["mem"]}MB]", 
                                "-o", f"{inp['outfiles']}.out", "-e", f"{inp['errfiles']}.err"] + cmd(inp)
 
-
-    # jobname = f"T0={inp["T0"]}_h0={inp['h0']}_T1={inp["T1"]}_h1={inp["h1"]}"
     for (T1, h1) in zip(Tf, hf):
         inp = {
             "T0": args.T0,

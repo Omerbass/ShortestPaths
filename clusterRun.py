@@ -15,9 +15,9 @@ if __name__ == "__main__":
     os.makedirs(f"{args.folder}/stderr", exist_ok=True)
     os.makedirs(f"{args.folder}/stdout", exist_ok=True)
 
-    Tf = np.linspace(0.0001,0.9999, 3)
-    hf = np.array([tc/2 * np.log((1+np.sqrt(1-tc))/(1-np.sqrt(1-tc))) + np.sqrt(1-tc) for tc in Tf]) * 0.9
-    Tf *= 0.9
+    Tf = np.linspace(0.0001,0.9999, 301)
+    hf = np.array([tc/2 * np.log((1+np.sqrt(1-tc))/(1-np.sqrt(1-tc))) + np.sqrt(1-tc) for tc in Tf]) * 0.99
+    Tf *= 0.99
 
     cmd = lambda inp: ["python3", "antiFerroPaths.py", str(inp["T0"]), str(inp["h0"]), str(inp["T1"]), str(inp["h1"]), "-o", inp["program_output"]]
     

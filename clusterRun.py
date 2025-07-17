@@ -8,7 +8,7 @@ if __name__ == "__main__":
     parser.add_argument("T0", help="initial temperature", type=float)
     parser.add_argument("h0", help="initial magnetic field", type=float)
     parser.add_argument("-f", "--folder", required=True, help="output folder", type=str)
-    parser.add_argument("-m", "--mem", required=False, help="memory limit in MB", type=int, default=2024)
+    parser.add_argument("-m", "--mem", required=False, help="memory limit in MB", type=int, default=2048)
     args = parser.parse_args()
 
     os.makedirs(f"{args.folder}/sim_out", exist_ok=True)

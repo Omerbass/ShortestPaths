@@ -4,9 +4,9 @@ import argparse
 import numpy as np
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(prog="Clustered MFAFGeodesicFinder", desc="Clustered call to Mean field anti-ferromagnet static metric geodesic path finder")
-    parser.add_argument("T0", help="initial temperature", type=int)
-    parser.add_argument("h0", help="initial magnetic field", type=int)
+    parser = argparse.ArgumentParser(prog="Clustered MFAFGeodesicFinder", description="Clustered call to Mean field anti-ferromagnet static metric geodesic path finder")
+    parser.add_argument("T0", help="initial temperature", type=float)
+    parser.add_argument("h0", help="initial magnetic field", type=float)
     parser.add_argument("-f", "--folder", required=True, help="output folder", type=str)
     parser.add_argument("-m", "--mem", required=False, help="memory limit in MB", type=int, default=2024)
     args = parser.parse_args()
@@ -15,7 +15,7 @@ if __name__ == "__main__":
     os.makedirs(f"{args.folder}/stderr", exist_ok=True)
     os.makedirs(f"{args.folder}/stdout", exist_ok=True)
 
-    Tf = np.linspace(0,1, 3)
+    Tf = np.linspace(0.0001,0.9999, 3)
     hf = np.array([tc/2 * np.log((1+np.sqrt(1-tc))/(1-np.sqrt(1-tc))) + np.sqrt(1-tc) for tc in Tf]) * 0.9
     Tf *= 0.9
 
@@ -30,6 +30,7 @@ if __name__ == "__main__":
             "h0": args.h0,
             "T1": T1,
             "h1": h1,
+            "mem": args.mem,
             "program_output": f"{args.folder}/sim_out/T0={args.T0}_h0={args.h0}_T1={T1:.3f}_h1={h1:.3f}.npz",
             "jobname": f"T0={args.T0}_h0={args.h0}_T1={T1:.2f}_h1={h1:.3f}",
             "errfiles": f"{args.folder}/stderr/T0={args.T0}_h0={args.h0}_T1={T1:.3f}_h1={h1:.3f}.e",

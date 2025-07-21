@@ -3,6 +3,13 @@ import os
 import argparse
 import numpy as np
 
+def cmd(inp):
+    return ["python3", "antiFerroPaths.py", str(inp["T0"]), str(inp["h0"]), str(inp["T1"]), str(inp["h1"]), "-o", inp["program_output"]]
+
+def cmd_cluster(inp):
+    return ["bsub", "-J", inp["jobname"] , "-R", f"rusage[mem={inp["mem"]}MB]", 
+                                   "-o", f"{inp['outfiles']}.out", "-e", f"{inp['errfiles']}.err"] + cmd(inp)
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(prog="Clustered MFAFGeodesicFinder", description="Clustered call to Mean field anti-ferromagnet static metric geodesic path finder")
     parser.add_argument("T0", help="initial temperature", type=float)
@@ -18,11 +25,6 @@ if __name__ == "__main__":
     Tf = np.linspace(0.0001,0.9999, 301)
     hf = np.array([tc/2 * np.log((1+np.sqrt(1-tc))/(1-np.sqrt(1-tc))) + np.sqrt(1-tc) for tc in Tf]) * 0.99
     Tf *= 0.99
-
-    cmd = lambda inp: ["python3", "antiFerroPaths.py", str(inp["T0"]), str(inp["h0"]), str(inp["T1"]), str(inp["h1"]), "-o", inp["program_output"]]
-    
-    cmd_cluster = lambda inp: ["bsub", "-J", inp["jobname"] , "-R", f"rusage[mem={inp["mem"]}MB]", 
-                               "-o", f"{inp['outfiles']}.out", "-e", f"{inp['errfiles']}.err"] + cmd(inp)
 
     for (T1, h1) in zip(Tf, hf):
         inp = {

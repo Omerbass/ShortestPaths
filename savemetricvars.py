@@ -47,8 +47,8 @@ def save_metric_and_christoffel(metric_func, grid, filename):
             for i in range(n):
                 for j in range(n):
                     christoffel_grid[idx][k][i][j] = 0.5 * sum(
-                        inv_metric[k, l] * (partials[i, l, j] + partials[j, l, i] - partials[l, i, j])
-                        for l in range(n)
+                        inv_metric[k, index_l] * (partials[i, index_l, j] + partials[j, index_l, i] - partials[index_l, i, j])
+                        for index_l in range(n)
                     )
     
     # Save to .npz file

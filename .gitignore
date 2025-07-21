@@ -1,5 +1,5 @@
 .ipynb_checkpoints
 __pycache__/
-*.ipynb
 .DS_STORE
 paths/
+metrics/

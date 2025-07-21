@@ -64,9 +64,9 @@ class GeoFinder:
     
     def path(self, x0, alpha, dist, tol=1e-5, v0 = 1):
         """Find the geodesic path from x0 to x1"""
-        stopevent = lambda t, y, *args: dist - y[-1] + 1e-5
+        stopevent = lambda t, y, *args: dist - y[-1] + 1e-5  # noqa: E731
         stopevent.terminal = True
-        y0 = np.concatenate([x0, [v0*np.cos(alpha), v0*np.sin(alpha)], [0]])
+        y0 = np.concatenate([x0, [v0*np.cos(alpha), v0*np.sin(alpha)]])
         sol = solve_ivp(self.geodesic_equation, (0, dist*20), y0, max_step=tol*0.5, events=(stopevent, ))
         path = self.apply_limits(sol.y[:self.dim,:])
         return path
@@ -77,7 +77,7 @@ class GeoFinder:
         dim = self.dim
         straight_path = np.linspace(x0, x1, 100)
         straight_dist = np.sum([np.sqrt((x-y).T @ self.metric((x+y)/2) @ (x-y)) for x,y in zip(straight_path[1:], straight_path[:-1])])
-        stopevent = lambda t, y, *args: straight_dist * 1.02 - y[-1]
+        stopevent = lambda t, y, *args: straight_dist * 1.02 - y[-1]  # noqa: E731
         stopevent.terminal = True
         
         def objective(alpha):
@@ -118,13 +118,14 @@ class GeoFinder:
         return alphamin, geodesic_dist,{"mindist": mindist, "alpharange": alpharange, "ixf": ixf, "sol": sol}
     
     def bvpsolver(self, x0, x1, tol=None):
-        t = np.linspace(0,1,1001)
+        t = np.linspace(0,1,2)
         y_linear = np.linspace(np.append(x0, [0,1]),np.append(x1,[0,1]),len(t)).T
         def geodesics_for_bvp(t, y):
             dydt = np.array([self.geodesic_equation(t,y0) for y0 in y.T]).T
             return dydt
             
-        bc = lambda y1, y2: np.concatenate([y1[:2] - x0, y2[:2] - x1])
+        def bc(y1, y2):
+            return np.concatenate([y1[:2] - x0, y2[:2] - x1])
 
         if tol:
             return sc.integrate.solve_bvp(geodesics_for_bvp, bc, t, y_linear, tol=tol)
@@ -388,8 +389,6 @@ if __name__ == "__main__":
     print('Initial "angle:"', np.rad2deg(alpha))
     print('minimal distance =', mindist)
 
-    # res = geo.bvpsolver(x0, x1)
-    # path = res.y[:2,:]
     pathlength = np.sum([np.sqrt((x-y).T @ geo.metric((x+y)/2) @ (x-y)) for x,y in zip(path[:, 1:].T, path[:,:-1].T)])
     print("path length =", pathlength)
 
